@@ -61,19 +61,32 @@ def resolve_hostname(hostname):
 
 
 def smtp_client(mail_from, mail_to, auth_required, auth_user, auth_password, mailserver, verbose,
-                message="Hello", port=25, subject="Test"):
+                message="Hello", port=25, subject="Test", reply_to=None):
     to = '; '.join(mail_to) if len(mail_to) > 1 else mail_to[0]
 
-    msg_out = f"Date: {getDate()}" \
-              f"\r\nMIME-Version: 1.0" \
-              f"\r\nContent-Language: en-US" \
-              f"\r\nTo: {to}" \
-              f"\r\nFrom: {mail_from}" \
-              f"\r\nSubject:{subject}" \
-              f"\r\nContent-Type: text/plain; charset=UTF-8; format=flowed" \
-              f"\r\nContent-Transfer-Encoding: 7bit" \
-              f"\r\n\r\n{message}" \
-              f"\r\n.\r\n"
+    if reply_to:
+        msg_out = f"Date: {getDate()}" \
+                  f"\r\nMIME-Version: 1.0" \
+                  f"\r\nContent-Language: en-US" \
+                  f"\r\nTo: {to}" \
+                  f"\r\nFrom: {mail_from}" \
+                  f"\r\nReply-To:{reply_to}" \
+                  f"\r\nSubject:{subject}" \
+                  f"\r\nContent-Type: text/html; charset=UTF-8; format=flowed" \
+                  f"\r\nContent-Transfer-Encoding: 7bit" \
+                  f"\r\n\r\n{message}" \
+                  f"\r\n.\r\n"
+    else:
+        msg_out = f"Date: {getDate()}" \
+                  f"\r\nMIME-Version: 1.0" \
+                  f"\r\nContent-Language: en-US" \
+                  f"\r\nTo: {to}" \
+                  f"\r\nFrom: {mail_from}" \
+                  f"\r\nSubject:{subject}" \
+                  f"\r\nContent-Type: text/html; charset=UTF-8; format=flowed" \
+                  f"\r\nContent-Transfer-Encoding: 7bit" \
+                  f"\r\n\r\n{message}" \
+                  f"\r\n.\r\n"
 
     print(informational + " Message Content ".center(80, "*"))
     print(f"\n{msg_out}\n")
@@ -165,16 +178,29 @@ def smtp_client(mail_from, mail_to, auth_required, auth_user, auth_password, mai
             leave(f"250: \"MAIL FROM\" Bad response: {recv}", clientSock)
 
         print(yellow + f"\nEmail {str(counter)}/{str(total)}\n")
-        msg_out = f"Date: {getDate()}" \
-                  f"\r\nMIME-Version: 1.0" \
-                  f"\r\nContent-Language: en-US" \
-                  f"\r\nTo: {email}" \
-                  f"\r\nFrom: {mail_from}" \
-                  f"\r\nSubject:{subject}" \
-                  f"\r\nContent-Type: text/html; charset=UTF-8; format=flowed" \
-                  f"\r\nContent-Transfer-Encoding: 7bit" \
-                  f"\r\n\r\n{message}" \
-                  f"\r\n.\r\n"
+        if reply_to:
+            msg_out = f"Date: {getDate()}" \
+                      f"\r\nMIME-Version: 1.0" \
+                      f"\r\nContent-Language: en-US" \
+                      f"\r\nTo: {email}" \
+                      f"\r\nFrom: {mail_from}" \
+                      f"\r\nReply-To: {reply_to}" \
+                      f"\r\nSubject:{subject}" \
+                      f"\r\nContent-Type: text/html; charset=UTF-8; format=flowed" \
+                      f"\r\nContent-Transfer-Encoding: 7bit" \
+                      f"\r\n\r\n{message}" \
+                      f"\r\n.\r\n"
+        else:
+            msg_out = f"Date: {getDate()}" \
+                      f"\r\nMIME-Version: 1.0" \
+                      f"\r\nContent-Language: en-US" \
+                      f"\r\nTo: {email}" \
+                      f"\r\nFrom: {mail_from}" \
+                      f"\r\nSubject:{subject}" \
+                      f"\r\nContent-Type: text/html; charset=UTF-8; format=flowed" \
+                      f"\r\nContent-Transfer-Encoding: 7bit" \
+                      f"\r\n\r\n{message}" \
+                      f"\r\n.\r\n"
 
         # RCPT TO
         rcptTo = f"RCPT TO: <{email}>\r\n"
@@ -262,6 +288,14 @@ def parseArgs():
                 sys.exit(print(red + "Please ensure email is correct and try again."))
     args_out["mail_from"] = args.mail_from
 
+    # Parse REPLY TO
+    if args.reply_to:
+        if not isEmail(args.reply_to):
+            sys.exit(red + "Please supply a valid \"reply-to\" email address")
+        else:
+            args_out["reply_to"] = args.reply_to
+
+
     # Parse message
     if args.message:
         args_out["message"] = args.message
@@ -273,7 +307,7 @@ def parseArgs():
 
     # Resolve Mailserver
     try:
-        args_out["mailserver"] = ipaddress.IPv4Address(args.mailserver)
+        args_out["mailserver"] = str(ipaddress.IPv4Address(args.mailserver))
     except ValueError:
         args_out["mailserver"] = resolve_hostname(args.mailserver)
 
@@ -313,6 +347,7 @@ parser.add_argument('-S', '--mailserver', type=str, required=True,  help='mail s
 parser.add_argument('-U', '--auth-user', type=str, required=False,  help='user for authentication')
 parser.add_argument('-P', '--auth-password', type=str, required=False, help='password for authentication')
 parser.add_argument('-F', '--force', default=False, action='store_true', help='continue without prompting')
+parser.add_argument('-r', '--reply-to', type=str, required=False, help='address specified for email replies')
 args = parser.parse_args()
 
 if __name__ == "__main__":
