@@ -8,18 +8,24 @@ Ar1ste1a <ar1ste1a@proton.me>
 
 import base64
 import ipaddress
+import json
 import os.path
 import ssl
 import sys
 import argparse
 import re
 import time
+import uuid
+from datetime import datetime, timezone
 from socket import socket, AF_INET, SOCK_STREAM
 
 # Variables
+target_map = {}
+targetURI = ''
 BUFFER = 1024
 FORCE = False
 useTLS = False
+useID = False
 blue = "\033[1;32;40m"
 green = "\033[1;34;40m"
 yellow = "\033[1;33;40m"
@@ -62,6 +68,15 @@ msg_content = [
     "\r\n.\r\n"
 ]
 
+def printTargetMap():
+    global target_map
+    if len(target_map.keys()) > 0:
+        with open(f"target_map_{datetime.now().strftime('%a:%b:%d:%H:%M:%S')}", 'w') as w:
+            w.write(json.dumps(target_map, indent=4))
+
+
+def getSessionid():
+    return str(uuid.uuid4())
 
 def isEmail(email):
     regex = r"([a-zA-Z0-9_\-\.]+)@([a-zA-Z0-9_\-\.]+)\.([a-zA-Z]{2,5})"
@@ -75,6 +90,23 @@ def isEmail(email):
 def parseEmail(line):
     email = line.split("<")[1][:-1]
     return email
+
+
+def getFirst(email):
+    if email_aliased(email):
+        #  Expected Format: First Last <email.html>
+        name = email[:email.rfind("<")]
+        if " " in name:
+            return name.split(" ")[0].strip().capitalize()
+        elif "." in name:
+            return name.split(".")[0].strip().capitalize()
+        else:
+            return name.strip().capitalize()
+    else:
+        #  Expected Format: first[.]last@domain.com
+        name = email[:email.rfind("@")]
+        if "." in name:
+            return name.split(".")[0].strip().capitalize()
 
 
 def email_aliased(email):
@@ -140,6 +172,7 @@ def get_hostname(host):
 
 def craft_message(reply_to, subject, mail_from, message, mail_to):
     mailFrom = mail_from
+    msg_formatted_tmp = ''
     if not isEmail(reply_to):
         msg_headers.remove('Reply-To: .ReplyTo ')
     msg_no_format = "\r\n".join(msg_headers) + "".join(msg_content)
@@ -149,10 +182,24 @@ def craft_message(reply_to, subject, mail_from, message, mail_to):
         .replace(".Message", message)\
         .replace(".ReplyTo", reply_to)
 
+    # replace with url if necessary
+    msg_formatted_tmp = msg_formatted
+    if len(targetURI) > 0:
+        if useID:
+            global target_map
+            sess = getSessionid()
+            target_map['test'] = {}
+            target_map['test']['uuid'] = sess
+            uri = f"{targetURI}/?sessionid={sess}"
+            msg_formatted_tmp = msg_formatted_tmp.replace("${{.URL}}", uri)
+            msg_formatted_tmp = msg_formatted_tmp.replace("${{.URL.PRETTY}}", targetURI)
+        else:
+            msg_formatted_tmp = msg_formatted_tmp.replace("${{.URL}}", targetURI)
+        msg_formatted_tmp = msg_formatted_tmp.replace("${{.First}}", getFirst(mail_to))
     # Print Message Content
     print()
     print(informational + " Message Sample ".center(80, "*"))
-    print(f"\n{msg_formatted.replace('.To', mail_to).replace('.Date', getDate())}\n")
+    print(f"\n{msg_formatted_tmp.replace('.To', mail_to).replace('.Date', getDate())}\n")
     print(informational + "".center(80, "*"))
     return msg_formatted
 
@@ -266,11 +313,11 @@ def authenticate(sock, verbose, auth_user, auth_password):
 
     return
 
-
-def send_mail(sock, mail_to, mail_from, msg, verbose):
+def send_mail(sock, mail_to, mail_from, message, verbose):
     counter = 1
     total = len(mail_to)
     mailFrom = ""
+    global target_map
 
     for email in mail_to:
         # MAIL FROM
@@ -289,6 +336,20 @@ def send_mail(sock, mail_to, mail_from, msg, verbose):
 
         # Counter
         print(yellow + f"\n\t\tEmail {str(counter)}/{str(total)}\n" + reset)
+
+        msg = message
+        # replace with url if necessary
+        if len(targetURI) > 0:
+            if useID:
+                sess = getSessionid()
+                target_map[email] = {}
+                target_map[email]['uuid'] = sess
+                uri = f"{targetURI}/?sessionid={sess}"
+                msg = msg.replace("${{.URL}}", uri)
+                msg = msg.replace("${{.URL.PRETTY}}", targetURI)
+            else:
+                msg = msg.replace("${{.URL}}", targetURI)
+            msg = msg.replace("${{.First}}", getFirst(email))
 
         # Mail object
         msg_out = msg.replace(".Date", getDate()).replace(".To", email)
@@ -324,6 +385,10 @@ def send_mail(sock, mail_to, mail_from, msg, verbose):
         recv = sock.recv(BUFFER).decode()
         if verbose:
             print(green + f"Server: {recv}" + reset)
+
+        if useID:
+            target_map[email]["status"] = recv.strip()
+            target_map[email]["sent"] = datetime.now(timezone.utc).astimezone().isoformat()
 
         # QUIT
         if recv[:3] == "250":
@@ -378,15 +443,25 @@ def smtp_client(mail_from, mail_to, auth_required, auth_user, auth_password, mai
     if verbose:
         time.sleep(.5)
         print(yellow + "Sending Complete" + reset)
+    printTargetMap()
     leave(f"Terminating Program", clientSock)
 
 
 def parseArgs():
     global HOSTNAME
     args_out = {}
+    allEmails = []
 
     # Verbosity
     args_out["verbose"] = args.verbose
+
+    # Parse URL
+    if args.url:
+        url = args.url.strip()
+        if len(url) == 0:
+            sys.exit(print(red + "Please ensure url is correct and try again." + reset))
+        global targetURI
+        targetURI = url
 
     # Parse MAIL TO
     emails = []
@@ -395,14 +470,14 @@ def parseArgs():
     elif args.read_mail_to:
         path = args.read_mail_to
         if os.path.exists(path):
-            allEmails = open(path, "r").read().split()
+            allEmails = open(path, "r").read().split("\n")
     else:
-        sys.exit(print(red + "A SEND TO email is required." + reset))
+        sys.exit(print(red + "A SEND TO email.html is required." + reset))
 
     for email in allEmails:
         if not isEmail(email):
             if not FORCE:
-                user = input(yellow + f"{email} - is not a valid email, would you still like to add it?\n\t(Y/N): ")
+                user = input(yellow + f"{email} - is not a valid email.html, would you still like to add it?\n\t(Y/N): ")
                 if user[0].lower() == "y":
                     emails.append(email)
             else:
@@ -415,9 +490,9 @@ def parseArgs():
     if not isEmail(args.mail_from):
         if not FORCE:
             emails_provided = f"{args.mail_from}"
-            user = input(yellow + f"The MAIL FROM email provided appears to be incorrect. Would you like to continue? \n\t{emails_provided}\n\t(Y/N): ")
+            user = input(yellow + f"The MAIL FROM email.html provided appears to be incorrect. Would you like to continue? \n\t{emails_provided}\n\t(Y/N): ")
             if user[0].lower() == "n":
-                sys.exit(print(red + "Please ensure email is correct and try again." + reset))
+                sys.exit(print(red + "Please ensure email.html is correct and try again." + reset))
     args_out["mail_from"] = args.mail_from
 
     # Parse User Auth Requirement and Credentials
@@ -438,7 +513,7 @@ def parseArgs():
     # Parse REPLY TO
     if args.reply_to:
         if not isEmail(args.reply_to):
-            sys.exit(red + "Please supply a valid \"reply-to\" email address" + reset)
+            sys.exit(red + "Please supply a valid \"reply-to\" email.html address" + reset)
         else:
             args_out["reply_to"] = args.reply_to
 
@@ -471,6 +546,15 @@ def parseArgs():
         global useTLS
         useTLS = True
 
+    # Sessionid
+    if args.sessionid:
+        global useID
+        useID = True
+        if not 'message' in args_out.keys():
+            sys.exit(print(red + f"A message is required to replace a variable.\n\t" + reset))
+        if "${{.URL}}" not in args_out["message"]:
+            sys.exit(print(red + f"The message does not include a url to set a session id with.\n\t{args_out['message']}" + reset))
+
     return args_out
 
 
@@ -487,9 +571,11 @@ def main():
 
 # Argparse
 parser = argparse.ArgumentParser()
+parser.add_argument('-i', '--sessionid', default=False, action='store_true', help='create a sessionid for each target')
+parser.add_argument('-u', '--url', type=str, required=False, help='URL to replace variable \'${{.URL}}\' with')
 parser.add_argument('-v', '--verbose', default=False, action='store_true', help='increase verbosity')
-parser.add_argument('-t', '--mail-to', type=str, required=False, help='comma delimited list of email address to send to')
-parser.add_argument('-T', '--read-mail-to', type=str, required=False, help='new-line delimited list of email address to send to')
+parser.add_argument('-t', '--mail-to', type=str, required=False, help='comma delimited list of email.html address to send to')
+parser.add_argument('-T', '--read-mail-to', type=str, required=False, help='new-line delimited list of email.html address to send to')
 parser.add_argument('-f', '--mail-from', type=str, required=True, help='send from this address')
 parser.add_argument('-m', '--message', type=str, required=False, help='message content')
 parser.add_argument('-M', '--read-message', type=str, required=False, help='read message from file')
@@ -499,7 +585,7 @@ parser.add_argument('-S', '--mailserver', type=str, required=True,  help='mail s
 parser.add_argument('-U', '--auth-user', type=str, required=False,  help='user for authentication')
 parser.add_argument('-P', '--auth-password', type=str, required=False, help='password for authentication')
 parser.add_argument('-F', '--force', default=False, action='store_true', help='continue without prompting')
-parser.add_argument('-r', '--reply-to', type=str, required=False, help='address specified for email replies')
+parser.add_argument('-r', '--reply-to', type=str, required=False, help='address specified for email.html replies')
 parser.add_argument('-E', '--tls', default=False, action='store_true', help='utilize TLS for connection')
 parser.add_argument('-x', '--reuse-sender', default=False, action='store_true',  help='use sender as authentication user. Requires -P')
 args = parser.parse_args()
